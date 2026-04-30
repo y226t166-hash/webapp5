@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中世の領主シミュレーション 3D</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.jsの読み込み -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Noto Serif JP', serif;
+            margin: 0;
+            overflow: hidden; /* スクロールバーを消す */
+            background-color: #87CEEB; /* 空の色 */
+            user-select: none;
+        }
+
+        #webgl-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+        }
+
+        /* UIのレイヤーは手前に出す */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* UIの背景部分はクリックを透過させる */
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+
+        /* 実際にクリックできるUIパーツ */
+        .interactive-ui {
+            pointer-events: auto;
+        }
+
+        /* 羊皮紙風の背景とテキスト色 */
+        .parchment-bg {
+            background-color: rgba(253, 246, 227, 0.95);
+            color: #4a3f35;
+        }
+        .parchment-border {
+            border-color: #d4c4a8;
+        }
+
+        /* トースト通知 */
+        @keyframes slideUpFade {
+            0% { transform: translate(-50%, 100%); opacity: 0; }
+            10% { transform: translate(-50%, 0); opacity: 1; }
+            90% { transform: translate(-50%, 0); opacity: 1; }
+            100% { transform: translate(-50%, -20%); opacity: 0; }
+        }
+        .toast-message {
+            animation: slideUpFade 3s ease-in-out forwards;
+        }
+
+        /* スクロールバー装飾 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(229, 217, 197, 0.5); }
+        ::-webkit-scrollbar-thumb { background: #a89f91; border-radius: 3px; }
+        
+        /* 画面中央のカーソル・メッセージ等 */
+        #center-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            display: none;
+        }
+
+        /* 村長の吹き出しのしっぽ */
+        .mayor-speech-bubble::after {
+            content: '';
+            position: absolute;
+            left: -10px;
+            bottom: 20px;
+            border-width: 10px 10px 10px 0;
+            border-style: solid;
+            border-color: transparent rgba(253, 246, 227, 0.95) transparent transparent;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D描画用のコンテナ -->
+    <div id="webgl-container"></div>
+
+    <!-- UIレイヤー -->
+    <div id="ui-layer">
+        
+        <!-- ヘッダー：リソース状況 -->
+        <header class="interactive-ui bg-stone-900/90 text-stone-200 p-2 sm:p-3 shadow-xl border-b-4 border-stone-950 shrink-0 backdrop-blur-sm">
+            <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+                <h1 class="text-lg sm:text-xl font-bold flex items-center gap-2 text-amber-500 drop-shadow-md">
+                    🏰 領地開拓記 3D
+                </h1>
+                
+                <div class="flex flex-wrap justify-center gap-2 sm:gap-4 text-sm font-bold">
+                    <div class="flex items-center gap-1 bg-stone-800/80 px-2 py-1 rounded border border-stone-700 shadow-inner" title="金貨: 建物を建てるのに必要">
+                        <span>🪙</span>
+                        <span id="res-funds" class="w-12 text-right text-yellow-400">1000</span>
+                        <span id="rate-funds" class="text-xs text-stone-400 w-10">(--)</span>
+                    </div>
+                    <div class="flex items-center gap-1 bg-stone-800/80 px-2 py-1 rounded border border-stone-700 shadow-inner" title="領民: 街の発展度合い">
+                        <span>🧑‍🌾</span>
+                        <span id="res-pop" class="w-8 text-right">0</span>
+                    </div>
+                    <div class="flex items-center gap-1 bg-stone-800/80 px-2 py-1 rounded border border-stone-700 shadow-inner" title="食料: 領民を養うのに必要。不足すると税収ストップ">
+                        <span>🍞</span>
+                        <span id="res-food" class="w-10 text-right text-orange-300">50</span>
+                        <span id="rate-food" class="text-xs text-stone-400 w-10">(--)</span>
+                    </div>
+                    <div class="flex items-center gap-1 bg-stone-800/80 px-2 py-1 rounded border border-stone-700 shadow-inner" title="資材: 鍛冶屋で生産され、市場で消費して大きな利益を生む">
+                        <span>🪵</span>
+                        <span id="res-mat" class="w-8 text-right text-amber-600">0</span>
+                        <span id="rate-mat" class="text-xs text-stone-400 w-10">(--)</span>
+                    </div>
+                    <!-- BGMボタン追加 -->
+                    <button id="btn-bgm" class="interactive-ui bg-stone-800/80 hover:bg-stone-700 px-3 py-1 rounded border border-stone-600 shadow-sm transition-colors text-lg ml-1 sm:ml-2" title="BGMを再生する">
+                        🔇
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- メイン画面枠（透明・UI配置用） -->
+        <main class="flex-1 flex flex-col md:flex-row justify-between p-4 gap-4 overflow-hidden pointer-events-none">
+            
+            <!-- 左下エリア（操作案内 ＆ 村長） -->
+            <div class="mt-auto flex flex-col gap-4 pointer-events-auto">
+                <!-- 操作案内パネル -->
+                <div class="parchment-bg p-3 rounded border parchment-border shadow-lg max-w-[250px] hidden md:block">
+                    <h3 class="font-bold text-amber-950 mb-1 text-sm">📜 操作方法</h3>
+                    <ul class="text-xs text-amber-900 space-y-1">
+                        <li>・<b>左ドラッグ</b>: 視点の回転</li>
+                        <li>・<b>右ドラッグ</b>: 視点の移動</li>
+                        <li>・<b>スクロール</b>: ズーム</li>
+                        <li>・<b>クリック</b>: 選択 / 建築</li>
+                        <li>・<b>右クリック</b>: 建築キャンセル</li>
+                    </ul>
+                </div>
+
+                <!-- 村長パネル -->
+                <div class="parchment-bg p-3 rounded border parchment-border shadow-lg max-w-[300px] flex gap-3 items-end relative mayor-speech-bubble ml-4">
+                    <div class="text-5xl drop-shadow-md absolute -left-12 -bottom-2" id="mayor-face">🧙‍♂️</div>
+                    <div class="flex-1 ml-4">
+                        <div class="text-xs font-bold text-amber-900 mb-1">村長</div>
+                        <div id="mayor-message" class="text-sm text-amber-950 font-bold leading-tight transition-all">
+                            領主様、まずは開拓を進めるか、小麦畑を建ててくだされ。
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- サイドバー（右側：建設・管理メニュー） -->
+            <aside class="interactive-ui w-full md:w-80 parchment-bg border parchment-border shadow-2xl flex flex-col shrink-0 h-[60vh] md:h-full rounded-lg overflow-hidden relative pointer-events-auto ml-auto">
+                
+                <!-- ヘッダーとキャンセルボタンを追加（エラー修正） -->
+                <div class="p-3 border-b parchment-border shadow-sm shrink-0 bg-[#f5e6ce] flex justify-between items-center">
+                    <div>
+                        <h2 id="panel-title" class="text-md font-bold text-amber-950 flex items-center gap-2">
+                            ⚒️ 建設メニュー
+                        </h2>
+                        <p id="selected-info" class="text-xs text-amber-800 mt-1">建てたいものを選択してください</p>
+                    </div>
+                    <button id="btn-cancel-build" class="hidden text-xs bg-red-900 text-white px-2 py-1 rounded hover:bg-red-800">
+                        キャンセル
+                    </button>
+                </div>
+
+                <div id="action-panel" class="flex-1 overflow-y-auto p-3">
+                    <!-- 建設メニュー -->
+                    <div id="build-menu" class="space-y-2">
+                        <div id="buildings-list" class="flex flex-col gap-2">
+                            <!-- JSでリストを生成 -->
+                        </div>
+                    </div>
+
+                    <!-- 建物情報・解体メニュー -->
+                    <div id="manage-menu" class="hidden flex-col h-full">
+                        <div class="flex items-center gap-3 bg-[#f5e6ce] p-3 rounded border parchment-border mb-3 shadow-sm">
+                            <div id="manage-icon" class="text-4xl drop-shadow-md">🛖</div>
+                            <div>
+                                <h3 id="manage-name" class="font-bold text-lg text-amber-950">農民の家</h3>
+                                <p id="manage-desc" class="text-xs text-amber-800 mt-1 leading-tight">説明文</p>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-amber-900/5 p-2 rounded border border-amber-900/10 mb-4">
+                            <h4 class="text-xs font-bold text-amber-950 mb-1">領地への影響（毎秒）</h4>
+                            <ul id="manage-effects" class="text-xs text-amber-900 space-y-1 font-medium">
+                                <!-- 効果リスト -->
+                            </ul>
+                        </div>
+
+                        <div class="mt-auto space-y-2">
+                            <button id="btn-close-manage" class="w-full py-2 bg-stone-200 hover:bg-stone-300 text-stone-800 font-bold rounded border shadow-sm text-sm">
+                                閉じる
+                            </button>
+                            <button id="btn-demolish" class="w-full py-2 bg-red-900 hover:bg-red-800 text-red-50 font-bold rounded shadow-md flex justify-center items-center gap-1 text-sm">
+                                <span>🔥</span> 焼き払う (無料)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- 画面中央メッセージ（建築モード時など） -->
+        <div id="center-message" class="text-white text-xl font-bold">
+            配置する場所をクリック
+        </div>
+    </div>
+
+    <!-- トースト通知コンテナ -->
+    <div id="toast-container" class="interactive-ui fixed bottom-10 left-1/2 pointer-events-none z-50 flex flex-col gap-2 items-center"></div>
+
+    <script>
+        // ==========================================
+        // 1. ゲームデータ・設定
+        // ==========================================
+        const GRID_SIZE = 5; // 1マスの3D空間上のサイズ
+        const MAP_SIZE = 20; // 20x20マス (ワールドサイズ 100x100)
+        
+        let resources = { funds: 1000, food: 50, materials: 0, population: 0 };
+        let lastRates = { funds: 0, food: 0, materials: 0 };
+        
+        // BGM設定 (パブリックドメインの中世風楽曲を使用)
+        const bgm = new Audio('https://freepd.com/music/Village%20Consort.mp3');
+        bgm.loop = true;
+        bgm.volume = 0.2;
+        let isBgmStarted = false;
+        let isBgmMuted = true;
+
+        // 建設状態管理
+        let currentMode = 'select'; // 'select' または 'build'
+        let selectedBuildingIdToBuild = null;
+        let selectedExistingBuildingKey = null;
+
+        // 配置された建物を管理するMap (キー: "x,z" の文字列)
+        const buildingsMap = new Map();
+
+        // 村人の管理配列
+        const villagers = [];
+
+        // 建物の定義
+        const BUILDINGS = {
+            road: { 
+                id: 'road', name: '石畳', icon: '🪨', cost: 10, color: 0x888888,
+                desc: '領地の基本インフラ。', 
+                effects: {} 
+            },
+            house: { 
+                id: 'house', name: '農民の家', icon: '🛖', cost: 100, color: 0x8b5a2b,
+                desc: '領民が住む小屋。税を納めるが食料を消費。', 
+                effects: { pop: 2, funds: 2, food: -1 } 
+            },
+            farm: { 
+                id: 'farm', name: '小麦畑', icon: '🌾', cost: 200, color: 0xeedd82,
+                desc: '食料を生産する。領地運営に必須。', 
+                effects: { food: 5 } 
+            },
+            factory: { 
+                id: 'factory', name: '鍛冶屋', icon: '⚒️', cost: 400, color: 0x555555,
+                desc: '資材を生産するが、維持費がかかる。', 
+                effects: { materials: 1, funds: -3 } 
+            },
+            shop: { 
+                id: 'shop', name: '市場', icon: '🎪', cost: 800, color: 0xcc4444,
+                desc: '資材を消費し、莫大な金貨を生み出す。', 
+                effects: { funds: 15, materials: -1 } 
+            },
+            park: { 
+                id: 'park', name: '教会', icon: '⛪', cost: 300, color: 0xdddddd,
+                desc: '信仰の中心。少しの寄付金を生む。', 
+                effects: { funds: 3 } 
+            },
+            forest: { 
+                id: 'forest', name: '鬱蒼とした森', icon: '🌲', cost: 0, color: 0x228b22,
+                desc: '木々が生い茂る未開の地。開拓すると木材（資材）が得られる。', 
+                effects: {}, hidden: true 
+            }
+        };
+
+        // UI要素
+        const els = {
+            resFunds: document.getElementById('res-funds'),
+            resPop: document.getElementById('res-pop'),
+            resFood: document.getElementById('res-food'),
+            resMat: document.getElementById('res-mat'),
+            rateFunds: document.getElementById('rate-funds'),
+            rateFood: document.getElementById('rate-food'),
+            rateMat: document.getElementById('rate-mat'),
+            buildMenu: document.getElementById('build-menu'),
+            buildingsList: document.getElementById('buildings-list'),
+            manageMenu: document.getElementById('manage-menu'),
+            toastContainer: document.getElementById('toast-container'),
+            btnCancelBuild: document.getElementById('btn-cancel-build'),
+            btnCloseManage: document.getElementById('btn-close-manage'),
+            btnDemolish: document.getElementById('btn-demolish'),
+            centerMessage: document.getElementById('center-message'),
+            panelTitle: document.getElementById('panel-title'),
+            selectedInfo: document.getElementById('selected-info'),
+            mayorFace: document.getElementById('mayor-face'),
+            mayorMessage: document.getElementById('mayor-message'),
+            btnBgm: document.getElementById('btn-bgm')
+        };
+
+        // ==========================================
+        // 2. Three.js のセットアップ
+        // ==========================================
+        let scene, camera, renderer, controls;
+        let terrainMesh;
+        let previewMesh; // 建設時の半透明ゴースト
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const clock = new THREE.Clock(); // 村人アニメーション用
+
+        function initThreeJS() {
+            const container = document.getElementById('webgl-container');
+
+            // シーン
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 空の色
+            scene.fog = new THREE.Fog(0x87CEEB, 40, 150); // 遠くを霞ませる
+
+            // カメラ
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 60, 80);
+
+            // レンダラー
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // コントロール (マウスでの視点移動)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2 - 0.05; // 地下に行かないように
+            controls.minDistance = 20;
+            controls.maxDistance = 120;
+            controls.target.set(0, 0, 0);
+
+            // ライト
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xfff5e6, 0.8);
+            dirLight.position.set(50, 100, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -60;
+            dirLight.shadow.camera.right = 60;
+            dirLight.shadow.camera.top = 60;
+            dirLight.shadow.camera.bottom = -60;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+
+            // 地形の生成
+            createTerrain();
+            
+            // 初期マップに森をランダム生成
+            generateForests();
+
+            // イベントリスナー
+            window.addEventListener('resize', onWindowResize);
+            container.addEventListener('pointermove', onPointerMove);
+            container.addEventListener('click', onClick);
+            container.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                cancelBuildMode();
+            });
+
+            // アニメーションループ開始
+            animate();
+        }
+
+        // ==========================================
+        // 3. 地形生成と3Dモデルファクトリー
+        // ==========================================
+        function createTerrain() {
+            // 平面ジオメトリを作成し、頂点の高さを変えて地形を作る
+            const geo = new THREE.PlaneGeometry(MAP_SIZE * GRID_SIZE, MAP_SIZE * GRID_SIZE, MAP_SIZE * 2, MAP_SIZE * 2);
+            geo.rotateX(-Math.PI / 2);
+
+            const pos = geo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i);
+                const z = pos.getZ(i);
+                const distFromCenter = Math.sqrt(x*x + z*z);
+                
+                // サイン波によるゆるやかな起伏
+                let y = Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2;
+                
+                // 中央は盆地（平ら）、外周に行くほど山になる
+                if (distFromCenter > 30) {
+                    y += Math.pow((distFromCenter - 30) * 0.1, 2);
+                }
+                pos.setY(i, y);
+            }
+            geo.computeVertexNormals();
+
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: 0x558b2f, // 草の緑
+                roughness: 0.8,
+                flatShading: true // ポリゴンっぽさを少し残す
+            });
+
+            terrainMesh = new THREE.Mesh(geo, mat);
+            terrainMesh.receiveShadow = true;
+            scene.add(terrainMesh);
+        }
+
+        // 指定した座標(x,z)の地形のY（高さ）を取得する
+        function getTerrainHeight(x, z) {
+            raycaster.set(new THREE.Vector3(x, 50, z), new THREE.Vector3(0, -1, 0));
+            const intersects = raycaster.intersectObject(terrainMesh);
+            if (intersects.length > 0) {
+                return intersects[0].point.y;
+            }
+            return 0;
+        }
+
+        // 初期マップに森を生成する
+        function generateForests() {
+            for (let i = 0; i < 60; i++) {
+                let gx = Math.round((Math.random() - 0.5) * MAP_SIZE) * GRID_SIZE;
+                let gz = Math.round((Math.random() - 0.5) * MAP_SIZE) * GRID_SIZE;
+                let key = `${gx},${gz}`;
+                
+                // 中央付近（初期開拓地）は避ける
+                if (Math.abs(gx) <= GRID_SIZE && Math.abs(gz) <= GRID_SIZE) continue;
+                
+                if (!buildingsMap.has(key)) {
+                    let y = getTerrainHeight(gx, gz);
+                    // 高すぎる山には森を置かない
+                    if (y < 8) {
+                        placeBuilding({x: gx, z: gz, key: key}, 'forest', y);
+                    }
+                }
+            }
+        }
+
+        // 村人を生成する
+        function spawnVillager() {
+            const group = new THREE.Group();
+            
+            // 体
+            const bodyMat = new THREE.MeshStandardMaterial({ color: Math.random() * 0xffffff });
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 1.2, 8), bodyMat);
+            body.position.y = 0.6;
+            
+            // 頭
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), headMat);
+            head.position.y = 1.4;
+
+            body.castShadow = true; head.castShadow = true;
+            group.add(body, head);
+
+            // 初期位置を中央付近にする
+            let sx = (Math.random() - 0.5) * GRID_SIZE * 2;
+            let sz = (Math.random() - 0.5) * GRID_SIZE * 2;
+            group.position.set(sx, getTerrainHeight(sx, sz), sz);
+
+            scene.add(group);
+            villagers.push({
+                mesh: group,
+                target: new THREE.Vector3(sx, group.position.y, sz),
+                speed: 3.0 + Math.random() * 2.0 // 歩く速度
+            });
+        }
+
+        // 建物の3Dモデル（Group）を生成する関数
+        function createBuildingMesh(buildingId, isPreview = false) {
+            const group = new THREE.Group();
+            const b = BUILDINGS[buildingId];
+            
+            // 全ての建物に深い「基礎」を付けて、地形の傾斜で浮かないようにする
+            const baseGeo = new THREE.BoxGeometry(GRID_SIZE * 0.9, 10, GRID_SIZE * 0.9);
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x3e2723 });
+            const foundation = new THREE.Mesh(baseGeo, baseMat);
+            foundation.position.y = -4.5; // 地中に埋める
+            if (!isPreview) {
+                foundation.castShadow = true;
+                foundation.receiveShadow = true;
+            }
+            group.add(foundation);
+
+            // メインマテリアル
+            const matParams = { color: b.color };
+            if (isPreview) {
+                matParams.transparent = true;
+                matParams.opacity = 0.6;
+                matParams.color = 0x00ff00; // プレビュー時は緑
+            }
+            const mainMat = new THREE.MeshStandardMaterial(matParams);
+
+            // 種類ごとのモデリング
+            if (buildingId === 'road') {
+                const geo = new THREE.BoxGeometry(GRID_SIZE, 0.5, GRID_SIZE);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = 0.25;
+                if(!isPreview) { mesh.receiveShadow = true; mesh.castShadow = true; }
+                group.add(mesh);
+            } 
+            else if (buildingId === 'house') {
+                const geo = new THREE.BoxGeometry(GRID_SIZE*0.7, GRID_SIZE*0.6, GRID_SIZE*0.7);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = GRID_SIZE*0.3;
+                
+                const roofGeo = new THREE.ConeGeometry(GRID_SIZE*0.6, GRID_SIZE*0.5, 4);
+                const roofMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: 0x8b0000 });
+                const roof = new THREE.Mesh(roofGeo, roofMat);
+                roof.position.y = GRID_SIZE*0.6 + GRID_SIZE*0.25;
+                roof.rotation.y = Math.PI / 4;
+                
+                if(!isPreview) { mesh.castShadow = true; roof.castShadow = true; }
+                group.add(mesh, roof);
+            }
+            else if (buildingId === 'farm') {
+                const geo = new THREE.BoxGeometry(GRID_SIZE*0.9, 0.6, GRID_SIZE*0.9);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = 0.3;
+                if(!isPreview) { mesh.castShadow = true; mesh.receiveShadow = true; }
+                group.add(mesh);
+                
+                // 麦のポツポツ
+                for(let i=0; i<4; i++) {
+                    const wheat = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.8), mainMat);
+                    wheat.position.set((Math.random()-0.5)*3, 0.6, (Math.random()-0.5)*3);
+                    group.add(wheat);
+                }
+            }
+            else if (buildingId === 'factory') {
+                const geo = new THREE.BoxGeometry(GRID_SIZE*0.8, GRID_SIZE*0.6, GRID_SIZE*0.8);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = GRID_SIZE*0.3;
+                
+                const chimGeo = new THREE.CylinderGeometry(0.5, 0.5, 3);
+                const chimMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: 0x111111 });
+                const chim = new THREE.Mesh(chimGeo, chimMat);
+                chim.position.set(1.5, GRID_SIZE*0.6 + 1.5, -1.5);
+                
+                if(!isPreview) { mesh.castShadow = true; chim.castShadow = true; }
+                group.add(mesh, chim);
+            }
+            else if (buildingId === 'shop') {
+                const geo = new THREE.BoxGeometry(GRID_SIZE*0.8, GRID_SIZE*0.5, GRID_SIZE*0.8);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = GRID_SIZE*0.25;
+                
+                const tentGeo = new THREE.CylinderGeometry(GRID_SIZE*0.5, GRID_SIZE*0.5, GRID_SIZE*0.9, 3);
+                const tentMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: 0xffa500 });
+                const tent = new THREE.Mesh(tentGeo, tentMat);
+                tent.rotation.z = Math.PI / 2;
+                tent.position.y = GRID_SIZE*0.5 + 0.5;
+                
+                if(!isPreview) { mesh.castShadow = true; tent.castShadow = true; }
+                group.add(mesh, tent);
+            }
+            else if (buildingId === 'park') {
+                // 教会
+                const geo = new THREE.BoxGeometry(GRID_SIZE*0.6, GRID_SIZE*0.8, GRID_SIZE*0.8);
+                const mesh = new THREE.Mesh(geo, mainMat);
+                mesh.position.y = GRID_SIZE*0.4;
+                
+                const towerGeo = new THREE.BoxGeometry(GRID_SIZE*0.4, GRID_SIZE*1.5, GRID_SIZE*0.4);
+                const tower = new THREE.Mesh(towerGeo, mainMat);
+                tower.position.set(0, GRID_SIZE*0.75, 1.5);
+
+                const spireGeo = new THREE.ConeGeometry(GRID_SIZE*0.3, GRID_SIZE, 4);
+                const spireMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: 0x333333 });
+                const spire = new THREE.Mesh(spireGeo, spireMat);
+                spire.position.set(0, GRID_SIZE*1.5 + GRID_SIZE*0.5, 1.5);
+                spire.rotation.y = Math.PI / 4;
+
+                if(!isPreview) { mesh.castShadow=true; tower.castShadow=true; spire.castShadow=true; }
+                group.add(mesh, tower, spire);
+            }
+            else if (buildingId === 'forest') {
+                // 森（複数の木をまとめる）
+                for (let i = 0; i < 3; i++) {
+                    const treeGroup = new THREE.Group();
+                    
+                    const trunkMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: 0x5c4033 });
+                    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 1.5), trunkMat);
+                    trunk.position.y = 0.75;
+
+                    const leavesMat = isPreview ? mainMat : new THREE.MeshStandardMaterial({ color: b.color });
+                    const leaves1 = new THREE.Mesh(new THREE.ConeGeometry(1.5, 2, 5), leavesMat);
+                    leaves1.position.y = 2.0;
+                    const leaves2 = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1.8, 5), leavesMat);
+                    leaves2.position.y = 3.0;
+
+                    if(!isPreview) { trunk.castShadow=true; leaves1.castShadow=true; leaves2.castShadow=true; }
+                    treeGroup.add(trunk, leaves1, leaves2);
+                    
+                    // 少し位置をずらして配置
+                    treeGroup.position.set((Math.random()-0.5)*3, 0, (Math.random()-0.5)*3);
+                    group.add(treeGroup);
+                }
+            }
+
+            return group;
+        }
+
+        // ==========================================
+        // 4. インタラクション (マウス操作・レイキャスト)
+        // ==========================================
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function getGridPosFromIntersect(intersectPoint) {
+            // 中心を基準にグリッド単位にスナップ
+            let x = Math.round(intersectPoint.x / GRID_SIZE) * GRID_SIZE;
+            let z = Math.round(intersectPoint.z / GRID_SIZE) * GRID_SIZE;
+            return { x, z, key: `${x},${z}` };
+        }
+
+        function onPointerMove(event) {
+            // Three.js用の正規化デバイス座標 (-1 ~ +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            if (currentMode === 'build' && previewMesh) {
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObject(terrainMesh);
+                
+                if (intersects.length > 0) {
+                    previewMesh.visible = true;
+                    const gridPos = getGridPosFromIntersect(intersects[0].point);
+                    
+                    // 範囲外チェック
+                    const maxDist = (MAP_SIZE/2) * GRID_SIZE;
+                    if (Math.abs(gridPos.x) > maxDist || Math.abs(gridPos.z) > maxDist) {
+                        previewMesh.visible = false;
+                        return;
+                    }
+
+                    // 地形の高さを取得してYを合わせる
+                    const y = getTerrainHeight(gridPos.x, gridPos.z);
+                    previewMesh.position.set(gridPos.x, y, gridPos.z);
+
+                    // 既に建物がある、または傾斜が強すぎるか判定して色を変える
+                    let canBuild = true;
+                    if (buildingsMap.has(gridPos.key)) canBuild = false;
+                    if (y > 10) canBuild = false; // 高すぎる山には建てられない
+
+                    const color = canBuild ? 0x00ff00 : 0xff0000;
+                    previewMesh.children.forEach(child => {
+                        if(child.material) child.material.color.setHex(color);
+                    });
+                } else {
+                    previewMesh.visible = false;
+                }
+            }
+        }
+
+        function onClick(event) {
+            // UI上のクリックなら無視（pointer-eventsが貫通してきた場合のみ処理）
+            raycaster.setFromCamera(mouse, camera);
+
+            if (currentMode === 'build') {
+                const intersects = raycaster.intersectObject(terrainMesh);
+                if (intersects.length > 0) {
+                    const gridPos = getGridPosFromIntersect(intersects[0].point);
+                    tryBuildOnGrid(gridPos);
+                }
+            } else if (currentMode === 'select') {
+                // 建物がクリックされたか判定
+                const buildingGroups = Array.from(buildingsMap.values()).map(v => v.mesh);
+                // Groupの中の子Meshと判定させるため再帰フラグtrue
+                const intersects = raycaster.intersectObjects(buildingGroups, true); 
+                
+                if (intersects.length > 0) {
+                    // 交差したMeshの親Groupを探し、それがどの建物か特定する
+                    let group = intersects[0].object.parent;
+                    for (let [key, data] of buildingsMap.entries()) {
+                        if (data.mesh === group) {
+                            selectBuilding(key);
+                            return;
+                        }
+                    }
+                } else {
+                    // 何も無い地面をクリックしたら選択解除
+                    closeManageMenu();
+                }
+            }
+        }
+
+        // ==========================================
+        // 5. ゲームロジック・UI連携
+        // ==========================================
+        function initUI() {
+            els.buildingsList.innerHTML = '';
+            for (const key in BUILDINGS) {
+                const b = BUILDINGS[key];
+                if (b.hidden) continue; // 隠し建物（森など）はメニューに出さない
+
+                const btn = document.createElement('button');
+                btn.className = 'w-full text-left bg-white border border-stone-300 hover:bg-amber-50 p-2 rounded transition-all shadow-sm flex gap-3 items-center group active:scale-[0.98]';
+                
+                let effectsStr = [];
+                if(b.effects.funds) effectsStr.push(`金貨${b.effects.funds>0?'+':''}${b.effects.funds}`);
+                if(b.effects.food) effectsStr.push(`食料${b.effects.food>0?'+':''}${b.effects.food}`);
+                if(b.effects.materials) effectsStr.push(`資材${b.effects.materials>0?'+':''}${b.effects.materials}`);
+                if(b.effects.pop) effectsStr.push(`領民+${b.effects.pop}`);
+                let effectDisplay = effectsStr.length > 0 ? effectsStr.join(' / ') : '効果なし';
+
+                btn.innerHTML = `
+                    <div class="text-2xl w-10 h-10 flex items-center justify-center bg-stone-100 border border-stone-200 rounded shadow-inner group-hover:scale-110 transition-transform">${b.icon}</div>
+                    <div class="flex-1">
+                        <div class="flex justify-between items-baseline">
+                            <span class="font-bold text-amber-950 text-sm">${b.name}</span>
+                            <span class="text-xs font-bold text-yellow-600">🪙${b.cost}</span>
+                        </div>
+                        <p class="text-[10px] text-amber-900 leading-tight">${b.desc}</p>
+                        <p class="text-[10px] font-bold text-emerald-700 mt-1">${effectDisplay}</p>
+                    </div>
+                `;
+                btn.onclick = () => enterBuildMode(b.id);
+                els.buildingsList.appendChild(btn);
+            }
+
+            els.btnCancelBuild.onclick = cancelBuildMode;
+            els.btnCloseManage.onclick = closeManageMenu;
+            els.btnDemolish.onclick = demolishSelectedBuilding;
+            els.btnBgm.onclick = toggleBGM;
+
+            // 画面の初回クリック/タッチでBGMを開始（ブラウザの自動再生ブロック対策）
+            document.body.addEventListener('pointerdown', startBGMOnFirstClick, { once: true });
+            
+            updateUI();
+        }
+
+        function startBGMOnFirstClick() {
+            if (!isBgmStarted) {
+                isBgmStarted = true;
+                isBgmMuted = false;
+                bgm.play().catch(e => console.log("BGM自動再生がブロックされました:", e));
+                els.btnBgm.textContent = '🎵';
+                els.btnBgm.title = 'BGM: ON';
+            }
+        }
+
+        function toggleBGM() {
+            if (!isBgmStarted) {
+                startBGMOnFirstClick();
+                return;
+            }
+            
+            isBgmMuted = !isBgmMuted;
+            bgm.muted = isBgmMuted;
+            
+            if (isBgmMuted) {
+                els.btnBgm.textContent = '🔇';
+                els.btnBgm.title = 'BGM: OFF';
+            } else {
+                els.btnBgm.textContent = '🎵';
+                els.btnBgm.title = 'BGM: ON';
+            }
+        }
+
+        function enterBuildMode(buildingId) {
+            currentMode = 'build';
+            selectedBuildingIdToBuild = buildingId;
+            closeManageMenu();
+
+            els.panelTitle.innerHTML = `🏗️ 建築中: ${BUILDINGS[buildingId].name}`;
+            els.selectedInfo.textContent = "地形をクリックして配置";
+            els.btnCancelBuild.classList.remove('hidden');
+            els.centerMessage.style.display = 'block';
+
+            if (previewMesh) scene.remove(previewMesh);
+            previewMesh = createBuildingMesh(buildingId, true);
+            scene.add(previewMesh);
+        }
+
+        function cancelBuildMode() {
+            if (currentMode !== 'build') return;
+            currentMode = 'select';
+            selectedBuildingIdToBuild = null;
+            
+            els.panelTitle.innerHTML = `⚒️ 建設メニュー`;
+            els.selectedInfo.textContent = "建てたいものを選択してください";
+            els.btnCancelBuild.classList.add('hidden');
+            els.centerMessage.style.display = 'none';
+
+            if (previewMesh) {
+                scene.remove(previewMesh);
+                previewMesh = null;
+            }
+        }
+
+        function tryBuildOnGrid(gridPos) {
+            const b = BUILDINGS[selectedBuildingIdToBuild];
+            
+            if (buildingsMap.has(gridPos.key)) {
+                let existingId = buildingsMap.get(gridPos.key).id;
+                if (existingId === 'forest') {
+                    showMayorMessage("そこには森がありますぞ。まずは選択して開拓してくだされ！", "🌲");
+                } else {
+                    showMayorMessage("そこには既に建物がありますぞ！", "🏢");
+                }
+                return;
+            }
+            
+            const y = getTerrainHeight(gridPos.x, gridPos.z);
+            if (y > 10) {
+                showMayorMessage("山が険しすぎて建てられませぬ！", "⛰️");
+                return;
+            }
+
+            if (resources.funds >= b.cost) {
+                resources.funds -= b.cost;
+                placeBuilding(gridPos, selectedBuildingIdToBuild, y);
+                updateUI();
+                showMayorMessage(`${b.name} を建てましたぞ！`, "🏗️");
+            } else {
+                showMayorMessage("金貨が足りませぬ！", "🪙");
+                cancelBuildMode();
+            }
+        }
+
+        function placeBuilding(gridPos, buildingId, yHeight) {
+            const mesh = createBuildingMesh(buildingId, false);
+            mesh.position.set(gridPos.x, yHeight, gridPos.z);
+            
+            // 落下するようなアニメーションを付与（簡易）
+            mesh.position.y += 10; 
+            const targetY = yHeight;
+            const animateDrop = () => {
+                if (mesh.position.y > targetY) {
+                    mesh.position.y -= 1;
+                    requestAnimationFrame(animateDrop);
+                } else {
+                    mesh.position.y = targetY;
+                }
+            };
+            animateDrop();
+
+            scene.add(mesh);
+            buildingsMap.set(gridPos.key, { id: buildingId, mesh: mesh });
+        }
+
+        function selectBuilding(key) {
+            cancelBuildMode();
+            selectedExistingBuildingKey = key;
+            const data = buildingsMap.get(key);
+            const b = BUILDINGS[data.id];
+
+            els.buildMenu.classList.add('hidden');
+            els.manageMenu.classList.remove('hidden');
+            els.manageMenu.classList.add('flex');
+            
+            els.panelTitle.innerHTML = `📍 選択中`;
+            els.selectedInfo.textContent = `座標: ${key}`;
+
+            document.getElementById('manage-icon').textContent = b.icon;
+            document.getElementById('manage-name').textContent = b.name;
+            document.getElementById('manage-desc').textContent = b.desc;
+            
+            const effectsUl = document.getElementById('manage-effects');
+            effectsUl.innerHTML = '';
+            if(Object.keys(b.effects).length === 0) {
+                effectsUl.innerHTML = '<li class="text-amber-800/70">特別な効果はありません</li>';
+            } else {
+                if(b.effects.pop) effectsUl.innerHTML += `<li>🧑‍🌾 収容人数: +${b.effects.pop}</li>`;
+                if(b.effects.funds) effectsUl.innerHTML += `<li>🪙 金貨: ${b.effects.funds > 0 ? '+'+b.effects.funds : b.effects.funds}</li>`;
+                if(b.effects.food) effectsUl.innerHTML += `<li>🍞 食料: ${b.effects.food > 0 ? '+'+b.effects.food : b.effects.food}</li>`;
+                if(b.effects.materials) effectsUl.innerHTML += `<li>🪵 資材: ${b.effects.materials > 0 ? '+'+b.effects.materials : b.effects.materials}</li>`;
+            }
+            
+            // 森の場合はボタンを「開拓」に変更
+            if (b.id === 'forest') {
+                els.btnDemolish.innerHTML = `<span>🪓</span> 開拓する (🪙10)`;
+                els.btnDemolish.className = "w-full py-2 bg-amber-700 hover:bg-amber-600 text-amber-50 font-bold rounded shadow-md flex justify-center items-center gap-1 text-sm";
+            } else {
+                els.btnDemolish.innerHTML = `<span>🔥</span> 焼き払う (無料)`;
+                els.btnDemolish.className = "w-full py-2 bg-red-900 hover:bg-red-800 text-red-50 font-bold rounded shadow-md flex justify-center items-center gap-1 text-sm";
+            }
+            
+            // 選択した建物を少し跳ねさせる
+            data.mesh.position.y += 2;
+            setTimeout(() => { data.mesh.position.y -= 2; }, 150);
+        }
+
+        function closeManageMenu() {
+            selectedExistingBuildingKey = null;
+            els.buildMenu.classList.remove('hidden');
+            els.manageMenu.classList.add('hidden');
+            els.manageMenu.classList.remove('flex');
+            els.panelTitle.innerHTML = `⚒️ 建設メニュー`;
+            els.selectedInfo.textContent = "建てたいものを選択してください";
+        }
+
+        function demolishSelectedBuilding() {
+            if (!selectedExistingBuildingKey) return;
+            const data = buildingsMap.get(selectedExistingBuildingKey);
+            const b = BUILDINGS[data.id];
+            
+            // 森の開拓処理
+            if (b.id === 'forest') {
+                if (resources.funds < 10) {
+                    showMayorMessage("開拓の費用（金貨10）が足りませぬぞ！", "😰");
+                    return;
+                }
+                resources.funds -= 10;
+                resources.materials += 5; // 木材ゲット
+                showMayorMessage("見事な開拓じゃ！木材（資材+5）が手に入りましたぞ。", "😆");
+            } else {
+                showMayorMessage("建物を焼き払いましたな。", "🔥");
+            }
+            
+            scene.remove(data.mesh);
+            buildingsMap.delete(selectedExistingBuildingKey);
+            
+            closeManageMenu();
+            updateUI();
+            showToast("建物を焼き払いました");
+        }
+
+        // 毎秒実行されるシミュレーション
+        function gameTick() {
+            let changes = { funds: 0, food: 0, materials: 0, pop: 0 };
+            let shopCount = 0;
+
+            buildingsMap.forEach(data => {
+                const b = BUILDINGS[data.id];
+                
+                if (b.effects.pop) changes.pop += b.effects.pop;
+                if (b.effects.food) changes.food += b.effects.food;
+                
+                if (data.id === 'factory') {
+                    changes.materials += b.effects.materials;
+                    changes.funds += b.effects.funds;
+                } else if (data.id === 'shop') {
+                    shopCount++;
+                }
+            });
+
+            resources.population = changes.pop;
+
+            resources.food += changes.food;
+            let isStarving = false;
+            if (resources.food < 0) {
+                resources.food = 0;
+                isStarving = true;
+                if (Math.random() < 0.3) showMayorMessage('食料不足じゃ！農民が飢えて税が取れませぬ！', '😱');
+            }
+
+            buildingsMap.forEach(data => {
+                if ((data.id === 'house' && !isStarving) || data.id === 'park') {
+                    changes.funds += BUILDINGS[data.id].effects.funds;
+                }
+            });
+
+            resources.materials += changes.materials;
+            
+            let activeShops = 0;
+            for (let i = 0; i < shopCount; i++) {
+                if (resources.materials >= Math.abs(BUILDINGS.shop.effects.materials)) {
+                    resources.materials -= Math.abs(BUILDINGS.shop.effects.materials);
+                    changes.funds += BUILDINGS.shop.effects.funds;
+                    activeShops++;
+                }
+            }
+
+            resources.funds += changes.funds;
+            
+            if (resources.funds < 0) resources.funds = 0;
+            if (resources.materials < 0) resources.materials = 0;
+
+            lastRates.funds = changes.funds;
+            lastRates.food = changes.food;
+            lastRates.materials = changes.materials - (activeShops * Math.abs(BUILDINGS.shop.effects.materials));
+
+            // 人口に応じて村人を増減させる
+            const targetVillagerCount = Math.min(Math.floor(resources.population / 2), 30); // 2人に1人、最大30人描画
+            while (villagers.length < targetVillagerCount) {
+                spawnVillager();
+            }
+            while (villagers.length > targetVillagerCount && villagers.length > 0) {
+                const v = villagers.pop();
+                scene.remove(v.mesh);
+            }
+
+            updateUI();
+        }
+
+        function updateUI() {
+            els.resFunds.textContent = resources.funds;
+            els.resPop.textContent = resources.population;
+            els.resFood.textContent = resources.food;
+            els.resMat.textContent = resources.materials;
+
+            const formatRate = (val) => {
+                if (val > 0) return `<span class="text-green-400">(+${val})</span>`;
+                if (val < 0) return `<span class="text-red-400">(${val})</span>`;
+                return `<span class="text-stone-500">(0)</span>`;
+            };
+            
+            els.rateFunds.innerHTML = formatRate(lastRates.funds);
+            els.rateFood.innerHTML = formatRate(lastRates.food);
+            els.rateMat.innerHTML = formatRate(lastRates.materials);
+
+            if (resources.food === 0) {
+                els.resFood.classList.replace('text-orange-300', 'text-red-500');
+            } else {
+                els.resFood.classList.replace('text-red-500', 'text-orange-300');
+            }
+
+            // 資金不足時のボタン無効化
+            const btns = els.buildingsList.children;
+            let i = 0;
+            for (const key in BUILDINGS) {
+                const b = BUILDINGS[key];
+                if (b.hidden) continue; // 隠し建物（森など）はスキップして配列外アクセスを防ぐ
+
+                const cost = b.cost;
+                if (resources.funds < cost) {
+                    btns[i].classList.add('opacity-50', 'grayscale', 'pointer-events-none');
+                    btns[i].querySelector('span:last-child').classList.replace('text-yellow-600', 'text-red-700');
+                } else {
+                    btns[i].classList.remove('opacity-50', 'grayscale', 'pointer-events-none');
+                    btns[i].querySelector('span:last-child').classList.replace('text-red-700', 'text-yellow-600');
+                }
+                i++;
+            }
+        }
+
+        // 村長に喋らせる機能
+        function showMayorMessage(message, face = "🧙‍♂️") {
+            els.mayorFace.textContent = face;
+            els.mayorMessage.textContent = message;
+            
+            // アニメーションで強調する
+            els.mayorFace.parentElement.classList.remove('scale-105');
+            void els.mayorFace.parentElement.offsetWidth; // リフロー
+            els.mayorFace.parentElement.classList.add('scale-105');
+            setTimeout(() => els.mayorFace.parentElement.classList.remove('scale-105'), 200);
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            const bg = type === 'error' ? 'bg-red-900 border-red-950' : 'bg-amber-900 border-amber-950';
+            toast.className = `toast-message px-6 py-2 rounded text-amber-50 font-bold border-b-4 shadow-xl whitespace-nowrap z-50 text-sm ${bg}`;
+            toast.textContent = message;
+            els.toastContainer.appendChild(toast);
+            setTimeout(() => { if(toast.parentElement) toast.remove(); }, 3000);
+        }
+
+        // ==========================================
+        // 6. メインループ・起動処理
+        // ==========================================
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            const delta = clock.getDelta();
+            
+            // 村人の移動アニメーション
+            villagers.forEach(v => {
+                const dist = v.mesh.position.distanceTo(v.target);
+                if (dist < 0.1) {
+                    // 新しい目的地を現在地周辺からランダムに設定
+                    let nx = v.mesh.position.x + (Math.random() - 0.5) * 15;
+                    let nz = v.mesh.position.z + (Math.random() - 0.5) * 15;
+                    
+                    // マップ外に出ないように制限
+                    nx = Math.max(-MAP_SIZE*GRID_SIZE/2, Math.min(MAP_SIZE*GRID_SIZE/2, nx));
+                    nz = Math.max(-MAP_SIZE*GRID_SIZE/2, Math.min(MAP_SIZE*GRID_SIZE/2, nz));
+                    
+                    v.target.set(nx, getTerrainHeight(nx, nz), nz);
+                } else {
+                    // 目的地へ向かって少しずつ移動
+                    const dir = new THREE.Vector3().subVectors(v.target, v.mesh.position).normalize();
+                    v.mesh.position.add(dir.multiplyScalar(v.speed * delta));
+                    
+                    // 進行方向を向く
+                    v.mesh.lookAt(v.target.x, v.mesh.position.y, v.target.z);
+                    
+                    // 歩行による上下の揺れ（ピョンピョン）
+                    v.mesh.children[0].position.y = 0.6 + Math.abs(Math.sin(Date.now() * 0.01 * v.speed)) * 0.2;
+                    v.mesh.children[1].position.y = 1.4 + Math.abs(Math.sin(Date.now() * 0.01 * v.speed)) * 0.2;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = () => {
+            initThreeJS();
+            initUI();
+            
+            // 初期配置の建物をいくつか置く
+            placeBuilding({x: 0, z: 0, key: "0,0"}, 'house', getTerrainHeight(0,0));
+            placeBuilding({x: GRID_SIZE, z: 0, key: `${GRID_SIZE},0`}, 'farm', getTerrainHeight(GRID_SIZE,0));
+            placeBuilding({x: -GRID_SIZE, z: 0, key: `${-GRID_SIZE},0`}, 'road', getTerrainHeight(-GRID_SIZE,0));
+
+            // ゲームループ開始 (1秒ごと)
+            setInterval(gameTick, 1000);
+            
+            setTimeout(() => {
+                showMayorMessage("開拓スタートじゃ！まずは周りの森を開拓し、小麦畑と家を建てるのじゃ！", "🧙‍♂️");
+            }, 500);
+        };
+
+    </script>
+</body>
+</html>
